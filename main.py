@@ -23,6 +23,12 @@ from pathlib import Path
 import httpx
 import json
 import time
+from build_parquet import (
+    build_filing_rows,
+    write_filings_parquet,
+    build_holding_rows,
+    write_holdings_parquet,
+)
 
 ROOT = Path(__file__).resolve().parent
 FILERS = ROOT / "filers.csv"
@@ -31,6 +37,7 @@ CACHE = ROOT / ".cache"
 SUBMISSIONS_CACHE = CACHE / "submissions"
 LAST_REQUEST_TIME = 0.0
 MIN_REQUEST_INTERVAL = 0.25  # about 4 requests/second
+PRIMARY_CACHE = CACHE / "primary"
 
 def sec_get(url: str, user_agent: str) -> httpx.Response:
     """Send a rate-limited SEC request with simple retry/backoff."""
@@ -378,6 +385,48 @@ def download_filing_xml(
         f"from {name}"
     )
 
+def get_primary_document(
+    cik: str,
+    accession_number: str,
+    user_agent: str,
+) -> Path:
+    """Download and cache the primary XML document for one filing."""
+    PRIMARY_CACHE.mkdir(parents=True, exist_ok=True)
+
+    accession_no_dashes = accession_number.replace("-", "")
+    cache_file = PRIMARY_CACHE / f"{accession_no_dashes}.xml"
+
+    if cache_file.exists():
+        return cache_file
+
+    index_data = get_filing_index(cik, accession_number, user_agent)
+
+    primary_name = None
+
+    for item in index_data["directory"]["item"]:
+        if item["name"] == "primary_doc.xml":
+            primary_name = item["name"]
+            break
+
+    if primary_name is None:
+        raise ValueError(
+            f"Could not find primary_doc.xml for {accession_number}"
+        )
+
+    url = (
+        f"{ARCHIVE_BASE_URL}/"
+        f"{int(cik)}/"
+        f"{accession_no_dashes}/"
+        f"{primary_name}"
+    )
+
+    response = sec_get(url, user_agent)
+    cache_file.write_bytes(response.content)
+
+    return cache_file
+
+
+
 def run(user_agent: str, output: Path) -> None:
     """Build the dataset.
 
@@ -436,12 +485,27 @@ def run(user_agent: str, output: Path) -> None:
                 user_agent,
                 output,
             )
+            # Cache the filing's primary document. Need it later for filing-level metadata and reconciliation.
+            get_primary_document(
+                filer["cik"],
+                filing["accession_number"],
+                user_agent,
+            )
 
         all_filings.extend(filings)
 
     print()
     print(f"Total in-scope filings: {len(all_filings)}")
 
+    # Build the final Parquet datasets.
+    filing_rows = build_filing_rows()
+    write_filings_parquet(filing_rows)
+
+    holding_rows = build_holding_rows(filing_rows)
+    write_holdings_parquet(holding_rows)
+
+    print(f"Wrote {len(filing_rows)} filing rows")
+    print(f"Wrote {len(holding_rows)} holding rows")
 
 def main() -> int:
     ap = argparse.ArgumentParser(description=__doc__,

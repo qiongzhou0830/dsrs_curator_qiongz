@@ -33,3 +33,5 @@ Thumbs.db
 # `git check-ignore -v output/holdings.parquet` if you are unsure whether yours does.
 !output/
 !output/**
+local_llm_test.py
+make_agent_usage.py

@@ -4,8 +4,8 @@ Fill this in and commit it. A submission missing the video link is incomplete.
 
 ## Who
 
-- **Name:**
-- **NetID:**
+- **Name:**  Qiong Zhou
+- **NetID:** qiongz2
 
 ## Video
 
@@ -21,10 +21,10 @@ Set visibility to **Unlisted**.
 
 Mark what you completed. Partial work still gets read.
 
-- [ ] 1 · Source
-- [ ] 2 · Interrogate
-- [ ] 3 · Structure
-- [ ] 4 · Serve
+- [X] 1 · Source
+- [X] 2 · Interrogate
+- [X] 3 · Structure
+- [X] 4 · Serve
 - [ ] 5 · Show
 - [ ] Bonus 1 — Notice attribution
 - [ ] Bonus 2 — CUSIP validation
@@ -45,8 +45,11 @@ Mark what you completed. Partial work still gets read.
 
 ## Anything we should know
 
-Trade-offs you made, things you would do with more time, parts you are unsure about.
-Being candid here does not count against you.
+EDA found 40 total filings: 39 13F-HR filings and 1 13F-NT notice, with 134,635 total holdings rows.
+
+All holdings had 9-character CUSIPs and integer-valued value, share, and voting fields. Actual holdings row counts matched `tableEntryTotal` for all 39 holdings filings.
+
+Because the 13F-NT notice has no information table, I stored its `primary_doc.xml` so the pipeline still preserves one XML file per filing.
 
 ## Video sharing
 
