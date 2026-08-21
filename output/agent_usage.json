@@ -5,70 +5,70 @@
       "calls": 1,
       "prompt_tokens": 681,
       "completion_tokens": 89,
-      "elapsed_seconds": 7.902
+      "elapsed_seconds": 30.473
     },
     {
       "question": "Which manager added the most Nvidia shares between 2026 Q1 and 2026 Q2?",
       "calls": 1,
       "prompt_tokens": 689,
       "completion_tokens": 99,
-      "elapsed_seconds": 6.259
+      "elapsed_seconds": 6.575
     },
     {
       "question": "How many distinct issuers did Renaissance Technologies LLC report in 2026 Q2?",
       "calls": 1,
       "prompt_tokens": 683,
       "completion_tokens": 89,
-      "elapsed_seconds": 5.696
+      "elapsed_seconds": 6.003
     },
     {
       "question": "What was the total reported value of Citadel Advisors LLC's holdings in 2026 Q1?",
       "calls": 1,
       "prompt_tokens": 687,
       "completion_tokens": 88,
-      "elapsed_seconds": 4.908
+      "elapsed_seconds": 5.257
     },
     {
       "question": "Which managers in the roster filed a 13F-NT instead of a 13F-HR for 2026 Q2?",
       "calls": 1,
       "prompt_tokens": 696,
       "completion_tokens": 90,
-      "elapsed_seconds": 5.151
+      "elapsed_seconds": 5.33
     },
     {
       "question": "Did Pershing Square Capital Management report any Microsoft holdings directly in 2026 Q2?",
       "calls": 1,
       "prompt_tokens": 685,
       "completion_tokens": 90,
-      "elapsed_seconds": 4.978
+      "elapsed_seconds": 5.274
     },
     {
       "question": "Which manager reported the most call options in 2026 Q2?",
       "calls": 1,
       "prompt_tokens": 681,
       "completion_tokens": 96,
-      "elapsed_seconds": 5.242
+      "elapsed_seconds": 5.625
     },
     {
       "question": "What was Third Point LLC's largest position by value in 2026 Q1, and what was it?",
       "calls": 1,
       "prompt_tokens": 690,
       "completion_tokens": 89,
-      "elapsed_seconds": 4.961
+      "elapsed_seconds": 5.11
     },
     {
       "question": "Which manager held Tesla in both 2026 Q1 and 2026 Q2, and did the position grow or shrink?",
       "calls": 1,
       "prompt_tokens": 695,
       "completion_tokens": 98,
-      "elapsed_seconds": 5.87
+      "elapsed_seconds": 6.035
     },
     {
       "question": "What was the average portfolio value across all managers in 2026 Q3?",
       "calls": 1,
       "prompt_tokens": 683,
       "completion_tokens": 84,
-      "elapsed_seconds": 5.49
+      "elapsed_seconds": 5.693
     }
   ],
   "totals": {
