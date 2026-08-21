@@ -15,7 +15,7 @@ a question.
 Upload to Illinois MediaSpace: https://mediaspace.illinois.edu/upload/media
 Set visibility to **Unlisted**.
 
-- **Link:**
+- **Link:**  https://mediaspace.illinois.edu/media/t/1_y0hjo9ai
 
 ## Chapters attempted
 
@@ -25,7 +25,7 @@ Mark what you completed. Partial work still gets read.
 - [X] 2 · Interrogate
 - [X] 3 · Structure
 - [X] 4 · Serve
-- [ ] 5 · Show
+- [X] 5 · Show
 - [ ] Bonus 1 — Notice attribution
 - [ ] Bonus 2 — CUSIP validation
 
