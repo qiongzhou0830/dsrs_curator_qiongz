@@ -1,4 +1,5 @@
 from pathlib import Path
+from collections import Counter
 import xml.etree.ElementTree as ET
 
 
@@ -7,292 +8,596 @@ FILINGS_DIR = ROOT / "output" / "filings"
 PRIMARY_DIR = ROOT / ".cache" / "primary"
 
 
-def local_name(tag: str) -> str:
-    """Remove XML namespace from a tag."""
+def tag_name(tag):
     return tag.split("}")[-1]
 
 
-def get_text(element, tag_name):
-    """Find the text of one XML tag inside an element."""
+def find_text(element, name):
     for child in element.iter():
-        if local_name(child.tag) == tag_name:
-            return child.text
+        if tag_name(child.tag) == name:
+            if child.text is None:
+                return None
+            return child.text.strip()
     return None
 
 
-def parse_holdings_file(xml_file: Path) -> dict:
-    """Inspect one holdings XML file."""
-    root = ET.parse(xml_file).getroot()
+def main():
+    xml_files = sorted(FILINGS_DIR.rglob("*.xml"))
 
-    holdings_count = 0
+    holdings_files = []
+    notice_files = []
+
+    total_rows = 0
+
     bad_cusip = 0
     bad_value = 0
-    bad_shares = 0
+    bad_amount = 0
     bad_voting = 0
 
     missing_figi = 0
     missing_put_call = 0
     missing_other_manager = 0
 
-    total_value = 0
+    amount_types = Counter()
+    put_calls = Counter()
+    discretion_values = Counter()
 
-    for row in root.iter():
-        if local_name(row.tag) != "infoTable":
-            continue
+    prn_example = None
+    letter_cusip_example = None
+    other_manager_example = None
+    spacing_example = None
 
-        holdings_count += 1
+    repeated_cusip_example = None
+    repeated_cusip_rows = None
 
-        cusip = get_text(row, "cusip")
-        value = get_text(row, "value")
-        shares = get_text(row, "sshPrnamt")
-
-        voting_sole = get_text(row, "Sole")
-        voting_shared = get_text(row, "Shared")
-        voting_none = get_text(row, "None")
-
-        figi = get_text(row, "figi")
-        put_call = get_text(row, "putCall")
-        other_manager = get_text(row, "otherManager")
-
-        # Check 1:
-        # Chapter 3 expects CUSIP to be a 9-character string.
-        if cusip is None or len(cusip.strip()) != 9:
-            bad_cusip += 1
-
-        # Check 2:
-        # Chapter 3 expects value to be an integer.
-        try:
-            value_int = int(value)
-            total_value += value_int
-        except (TypeError, ValueError):
-            bad_value += 1
-
-        # Check 3:
-        # Chapter 3 expects share amount to be an integer.
-        try:
-            int(shares)
-        except (TypeError, ValueError):
-            bad_shares += 1
-
-        # Check 4:
-        # Chapter 3 expects all three voting fields to be integers.
-        for voting_value in [voting_sole, voting_shared, voting_none]:
-            try:
-                int(voting_value)
-            except (TypeError, ValueError):
-                bad_voting += 1
-
-        # Check 5:
-        # These fields are nullable in the required schema,
-        # so we count how often they are missing.
-        if figi is None:
-            missing_figi += 1
-
-        if put_call is None:
-            missing_put_call += 1
-
-        if other_manager is None:
-            missing_other_manager += 1
-
-    return {
-        "file": xml_file,
-        "holdings_count": holdings_count,
-        "bad_cusip": bad_cusip,
-        "bad_value": bad_value,
-        "bad_shares": bad_shares,
-        "bad_voting": bad_voting,
-        "missing_figi": missing_figi,
-        "missing_put_call": missing_put_call,
-        "missing_other_manager": missing_other_manager,
-        "total_value": total_value,
-    }
+    names_by_cusip = {}
+    name_change_example = None  
 
 
-def parse_primary_file(xml_file: Path) -> dict:
-    """Read filing-level information from one primary document."""
-    root = ET.parse(xml_file).getroot()
+    # -----------------------------
+    # Read all 40 saved XML files
+    # -----------------------------
 
-    return {
-        "submission_type": get_text(root, "submissionType"),
-        "period_of_report": get_text(root, "periodOfReport"),
-        "table_entry_total": get_text(root, "tableEntryTotal"),
-        "table_value_total": get_text(root, "tableValueTotal"),
-        "filing_manager": get_text(root, "name"),
-        "report_type": get_text(root, "reportType"),
-    }
-
-
-def main() -> None:
-    xml_files = sorted(FILINGS_DIR.rglob("*.xml"))
-
-    holdings_files = []
-    notice_files = []
-    unknown_files = []
-
-    # Check 6:
-    # Identify whether each saved XML is a holdings table or a notice.
     for xml_file in xml_files:
         root = ET.parse(xml_file).getroot()
-        root_name = local_name(root.tag)
 
-        if root_name == "informationTable":
-            holdings_files.append(xml_file)
+        root_type = tag_name(root.tag)
 
-        elif root_name == "edgarSubmission":
+        if root_type == "edgarSubmission":
             notice_files.append(xml_file)
+            continue
 
-        else:
-            unknown_files.append(xml_file)
+        if root_type != "informationTable":
+            continue
 
+        holdings_files.append(xml_file)
+
+        cusip_rows = {}
+
+        for row in root.iter():
+            if tag_name(row.tag) != "infoTable":
+                continue
+
+            total_rows += 1
+
+            issuer = find_text(row, "nameOfIssuer")
+            title = find_text(row, "titleOfClass")
+            cusip = find_text(row, "cusip")
+
+            if cusip is not None and issuer is not None:
+
+                if cusip not in names_by_cusip:
+                    names_by_cusip[cusip] = set()
+
+                names_by_cusip[cusip].add(issuer)
+
+            value = find_text(row, "value")
+
+            amount = find_text(row, "sshPrnamt")
+            amount_type = find_text(row, "sshPrnamtType")
+
+            figi = find_text(row, "figi")
+            put_call = find_text(row, "putCall")
+            other_manager = find_text(row, "otherManager")
+
+            investment_discretion = find_text(
+                row,
+                "investmentDiscretion",
+            )
+
+            voting_sole = find_text(row, "Sole")
+            voting_shared = find_text(row, "Shared")
+            voting_none = find_text(row, "None")
+
+
+            # -----------------------------
+            # Basic schema checks
+            # -----------------------------
+
+            if cusip is None or len(cusip) != 9:
+                bad_cusip += 1
+
+            try:
+                int(value)
+            except (TypeError, ValueError):
+                bad_value += 1
+
+            try:
+                int(amount)
+            except (TypeError, ValueError):
+                bad_amount += 1
+
+            for voting_value in [
+                voting_sole,
+                voting_shared,
+                voting_none,
+            ]:
+                try:
+                    int(voting_value)
+                except (TypeError, ValueError):
+                    bad_voting += 1
+
+
+            # -----------------------------
+            # Nullable fields
+            # -----------------------------
+
+            if figi is None:
+                missing_figi += 1
+
+            if put_call is None:
+                missing_put_call += 1
+            else:
+                put_calls[put_call] += 1
+
+            if other_manager is None:
+                missing_other_manager += 1
+
+
+            # -----------------------------
+            # Observed categorical values
+            # -----------------------------
+
+            if amount_type is not None:
+                amount_types[amount_type] += 1
+
+            if investment_discretion is not None:
+                discretion_values[
+                    investment_discretion
+                ] += 1
+
+
+            # -----------------------------
+            # Keep some real examples
+            # -----------------------------
+
+            if (
+                amount_type == "PRN"
+                and prn_example is None
+            ):
+                prn_example = (
+                    xml_file.stem,
+                    issuer,
+                    title,
+                    cusip,
+                    amount,
+                )
+
+            if (
+                cusip is not None
+                and cusip[0].isalpha()
+                and letter_cusip_example is None
+            ):
+                letter_cusip_example = (
+                    xml_file.stem,
+                    issuer,
+                    title,
+                    cusip,
+                )
+
+            if (
+                other_manager is not None
+                and "," in other_manager
+                and other_manager_example is None
+            ):
+                other_manager_example = (
+                    xml_file.stem,
+                    issuer,
+                    cusip,
+                    other_manager,
+                )
+
+            if (
+                issuer is not None
+                and "  " in issuer
+                and spacing_example is None
+            ):
+                spacing_example = (
+                    xml_file.stem,
+                    issuer,
+                    cusip,
+                )
+
+
+            # -----------------------------
+            # Save rows by CUSIP
+            # -----------------------------
+
+            if cusip is not None:
+
+                if cusip not in cusip_rows:
+                    cusip_rows[cusip] = []
+
+                cusip_rows[cusip].append({
+                    "issuer": issuer,
+                    "title": title,
+                    "value": value,
+                    "amount": amount,
+                    "amount_type": amount_type,
+                    "put_call": put_call,
+                    "investment_discretion":
+                        investment_discretion,
+                    "other_manager": other_manager,
+                })
+
+
+        # Find one real example where the same CUSIP
+        # occurs more than once in the same filing.
+        if repeated_cusip_example is None:
+
+            for cusip, rows in cusip_rows.items():
+
+                if len(rows) > 1:
+                    repeated_cusip_example = (
+                        xml_file.stem,
+                        cusip,
+                        len(rows),
+                    )
+
+                    repeated_cusip_rows = rows[:3]
+                    break
+
+
+    # -----------------------------
+    # Filing structure
+    # -----------------------------
+
+    print()
     print("=== Filing structure ===")
-    print(f"Total XML files: {len(xml_files)}")
-    print(f"Holdings filings: {len(holdings_files)}")
-    print(f"Notice filings: {len(notice_files)}")
-    print(f"Unknown files: {len(unknown_files)}")
 
-    holdings_results = []
+    print("Total XML files:", len(xml_files))
+    print("Holdings filings:", len(holdings_files))
+    print("Notice filings:", len(notice_files))
+    print("Total holdings rows:", total_rows)
 
-    for xml_file in holdings_files:
-        holdings_results.append(parse_holdings_file(xml_file))
+    if notice_files:
+        print(
+            "Notice filing:",
+            notice_files[0].stem,
+        )
 
-    total_holdings = sum(
-        row["holdings_count"]
-        for row in holdings_results
-    )
+
+    # -----------------------------
+    # Basic checks
+    # -----------------------------
 
     print()
-    print("=== Holdings rows ===")
-    print(f"Total holdings rows: {total_holdings}")
+    print("=== Basic checks ===")
 
-    # Check 7:
-    # Validate fields that will later become integer/string columns.
-    print()
-    print("=== Schema-related checks ===")
+    print("Bad CUSIP rows:", bad_cusip)
+    print("Bad value rows:", bad_value)
+    print("Bad sshPrnamt rows:", bad_amount)
+    print("Bad voting values:", bad_voting)
 
-    print(
-        "Bad CUSIP rows:",
-        sum(row["bad_cusip"] for row in holdings_results),
-    )
 
-    print(
-        "Bad value rows:",
-        sum(row["bad_value"] for row in holdings_results),
-    )
+    # -----------------------------
+    # Nullable fields
+    # -----------------------------
 
-    print(
-        "Bad share rows:",
-        sum(row["bad_shares"] for row in holdings_results),
-    )
-
-    print(
-        "Bad voting values:",
-        sum(row["bad_voting"] for row in holdings_results),
-    )
-
-    # Check 8:
-    # See how often nullable fields are actually absent.
     print()
     print("=== Nullable fields ===")
 
+    print("Missing FIGI:", missing_figi)
+    print("Missing putCall:", missing_put_call)
     print(
-        "Missing FIGI:",
-        sum(row["missing_figi"] for row in holdings_results),
+        "Missing otherManager:",
+        missing_other_manager,
     )
 
-    print(
-        "Missing put/call:",
-        sum(row["missing_put_call"] for row in holdings_results),
-    )
 
-    print(
-        "Missing other manager:",
-        sum(row["missing_other_manager"] for row in holdings_results),
-    )
+    # -----------------------------
+    # Actual values observed
+    # -----------------------------
 
-    # Check 9:
-    # Show the largest filings by number of holdings.
     print()
-    print("=== Largest filings ===")
+    print("=== Observed values ===")
 
-    largest = sorted(
-        holdings_results,
-        key=lambda row: row["holdings_count"],
-        reverse=True,
-    )[:10]
+    print(
+        "sshPrnamtType:",
+        dict(amount_types),
+    )
 
-    for row in largest:
-        print(
-            row["file"].name,
-            row["holdings_count"],
-        )
+    print(
+        "putCall:",
+        dict(put_calls),
+    )
 
-    # Check 10:
-    # Compare the real number of infoTable rows against
-    # tableEntryTotal reported in the primary document.
+    print(
+        "investmentDiscretion:",
+        dict(discretion_values),
+    )
+
+
+    # -----------------------------
+    # Real examples from the XML
+    # -----------------------------
+    for cusip, names in names_by_cusip.items():
+
+        if len(names) > 1:
+            name_change_example = (
+                cusip,
+                sorted(names)[:3],
+            )
+            break
+
+    print()
+    print("=== Concrete examples ===")
+
+    print(
+        "PRN example:",
+        prn_example,
+    )
+
+    print(
+        "Letter-leading CUSIP example:",
+        letter_cusip_example,
+    )
+
+    print(
+        "Complex otherManager example:",
+        other_manager_example,
+    )
+
+    print(
+        "Issuer spacing example:",
+        spacing_example,
+    )
+
+    print(
+        "Same CUSIP with different issuer names:",
+        name_change_example,
+    )
+
+    print(
+        "Repeated CUSIP example:",
+        repeated_cusip_example,
+    )
+
+    if repeated_cusip_rows is not None:
+        print("Example rows with that CUSIP:")
+
+        for row in repeated_cusip_rows:
+            print(row)
+
+
+    # -----------------------------
+    # Primary document reconciliation
+    # -----------------------------
+
     print()
     print("=== Primary document reconciliation ===")
 
-    mismatch_count = 0
-    checked_count = 0
+    checked_files = 0
+    entry_mismatches = 0
+    value_mismatches = 0
 
-    for row in holdings_results:
-        accession = row["file"].stem
-        primary_file = PRIMARY_DIR / f"{accession}.xml"
+    for xml_file in holdings_files:
+
+        accession = xml_file.stem
+
+        primary_file = (
+            PRIMARY_DIR / f"{accession}.xml"
+        )
 
         if not primary_file.exists():
             continue
 
-        primary = parse_primary_file(primary_file)
+        primary_root = ET.parse(
+            primary_file
+        ).getroot()
 
-        table_entry_total = primary["table_entry_total"]
+        declared_entries = find_text(
+            primary_root,
+            "tableEntryTotal",
+        )
 
-        if table_entry_total is not None:
-            checked_count += 1
+        declared_value = find_text(
+            primary_root,
+            "tableValueTotal",
+        )
 
-            if int(table_entry_total) != row["holdings_count"]:
-                mismatch_count += 1
+        holdings_root = ET.parse(
+            xml_file
+        ).getroot()
+
+        actual_entries = 0
+        actual_value = 0
+
+        for row in holdings_root.iter():
+
+            if tag_name(row.tag) != "infoTable":
+                continue
+
+            actual_entries += 1
+
+            value = find_text(row, "value")
+
+            if value is not None:
+                actual_value += int(value)
+
+        if declared_entries is not None:
+
+            checked_files += 1
+
+            if int(declared_entries) != actual_entries:
+
+                entry_mismatches += 1
+
                 print(
-                    "Entry count mismatch:",
+                    "Entry mismatch:",
                     accession,
-                    table_entry_total,
-                    row["holdings_count"],
+                    "declared=",
+                    declared_entries,
+                    "actual=",
+                    actual_entries,
                 )
 
-        # Also compare total reported value.
-        table_value_total = primary["table_value_total"]
+        if declared_value is not None:
 
-        if table_value_total is not None:
-            if int(table_value_total) != row["total_value"]:
+            if int(declared_value) != actual_value:
+
+                value_mismatches += 1
+
                 print(
-                    "Value total mismatch:",
+                    "Value mismatch:",
                     accession,
-                    table_value_total,
-                    row["total_value"],
+                    "declared=",
+                    declared_value,
+                    "actual=",
+                    actual_value,
                 )
 
-    print(f"Primary files checked: {checked_count}")
-    print(f"Entry count mismatches: {mismatch_count}")
+    print(
+        "Primary files checked:",
+        checked_files,
+    )
 
-    # Check 11:
-    # Confirm the expected report periods and form types
-    # from the primary documents that are already cached.
+    print(
+        "Entry count mismatches:",
+        entry_mismatches,
+    )
+
+    print(
+        "Value total mismatches:",
+        value_mismatches,
+    )
+
+
+    # -----------------------------
+    # Report periods and forms
+    # -----------------------------
+
     print()
     print("=== Report periods and forms ===")
 
     periods = set()
     forms = set()
 
-    for primary_file in PRIMARY_DIR.glob("*.xml"):
-        primary = parse_primary_file(primary_file)
+    if PRIMARY_DIR.exists():
 
-        if primary["period_of_report"] is not None:
-            periods.add(primary["period_of_report"])
+        for primary_file in PRIMARY_DIR.glob("*.xml"):
 
-        if primary["submission_type"] is not None:
-            forms.add(primary["submission_type"])
+            root = ET.parse(
+                primary_file
+            ).getroot()
 
-    print("Report periods:", sorted(periods))
-    print("Form types:", sorted(forms))
+            period = find_text(
+                root,
+                "periodOfReport",
+            )
+
+            form = find_text(
+                root,
+                "submissionType",
+            )
+
+            if period is not None:
+                periods.add(period)
+
+            if form is not None:
+                forms.add(form)
+
+    print(
+        "Report periods:",
+        sorted(periods),
+    )
+
+    print(
+        "Form types:",
+        sorted(forms),
+    )
+
+
+    # -----------------------------
+    # Main findings
+    # -----------------------------
+
+    print()
+    print("=== Findings ===")
+
+    print(
+        "1. There are two different filing structures. "
+        "Most XML files are information tables with holdings, "
+        "but the 13F-NT notice has filing information and no "
+        "infoTable rows."
+    )
+
+    print(
+        "2. FIGI, putCall, and otherManager are not present "
+        "on every holding. These fields need to stay nullable."
+    )
+
+    print(
+        "3. sshPrnamt does not always mean number of shares. "
+        "The data contains both SH and PRN. PRN is used for "
+        "principal amounts such as notes and debt securities."
+    )
+
+    print(
+        "4. The same CUSIP can appear multiple times in one "
+        "filing with different amounts, values, discretion, or "
+        "otherManager references. These are separate reported "
+        "positions and should not be deduplicated by CUSIP."
+    )
+
+    print(
+        "5. otherManager is not always one simple number. "
+        "The XML contains values with multiple references, "
+        "such as comma-separated values. It should be "
+        "preserved as a string."
+    )
+
+    print(
+        "6. Issuer names and titleOfClass are free text. "
+        "The same security can have different formatting or "
+        "spacing between filings, so the original text should "
+        "be preserved."
+    )
+
+    print(
+        "7. Some valid CUSIPs begin with letters. "
+        "CUSIP therefore needs to stay a 9-character string."
+    )
+
+    unusual_put_calls = [
+        x for x in put_calls
+        if x not in {"Call", "Put"}
+    ]
+
+    if len(unusual_put_calls) == 0:
+
+        print(
+            "8. In these 40 XML files, putCall used only "
+            "'Call' and 'Put'. No other capitalization was "
+            "observed."
+        )
+
+    else:
+
+        print(
+            "8. Other putCall values were found:",
+            unusual_put_calls,
+        )
 
 
 if __name__ == "__main__":
