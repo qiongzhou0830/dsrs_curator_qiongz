@@ -35,3 +35,4 @@ Thumbs.db
 !output/**
 local_llm_test.py
 make_agent_usage.py
+local_semantic_test.py

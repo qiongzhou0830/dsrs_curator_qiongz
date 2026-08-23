@@ -32,6 +32,7 @@ import os
 import re
 from agents.llm import complete_json, LLMError
 import pyarrow.parquet as pq
+from agents.parser import parse_question as parse_question_hybrid
 
 OUTPUT = Path(__file__).resolve().parents[1] / "output"
 FILINGS = OUTPUT / "filings.parquet"
@@ -879,12 +880,26 @@ def answer_intent(intent: dict) -> dict:
             "sources": [filing["accession_number"]],
         }
 
-    # 4. Which managers filed a notice?
+    # 4. Which managers filed a given 13F form type?
     if action == "filing_type":
+        requested_form = intent.get("form_type")
+
+        if requested_form not in {"13F-NT", "13F-HR"}:
+            return {
+                "answer": None,
+                "unit": "NONE",
+                "sources": [],
+            }
+
+        accepted_forms = {
+            requested_form,
+            f"{requested_form}/A",
+        }
+
         matches = [
             f for f in filings
             if f["report_quarter"] == quarter
-            and f["form_type"] in {"13F-NT", "13F-NT/A"}
+            and f["form_type"] in accepted_forms
         ]
 
         if not matches:
@@ -899,7 +914,6 @@ def answer_intent(intent: dict) -> dict:
             "unit": "NAME",
             "sources": [f["accession_number"] for f in matches],
         }
-        
     # 5. Which manager added the most shares of an issuer between two quarters?
     if action == "largest_change":
         from_quarter = intent["from_quarter"]
@@ -1470,7 +1484,23 @@ def main(question: str) -> dict[str, Any]:
 
     """Answer a question against the 13F dataset."""
     try:
-        intent = parse_question(question)
+        query = parse_question_hybrid(question)
+
+        if not validate_query(query):
+            intent = {
+                "action": "unsupported",
+                "manager": None,
+                "issuer": None,
+                "quarter": query.get("quarter"),
+                "from_quarter": query.get("from_quarter"),
+                "to_quarter": query.get("to_quarter"),
+                "metric": "none",
+                "option_type": None,
+                "form_type": None,
+            }
+        else:
+            intent = query_to_intent(query)
+
         return answer_intent(intent)
 
     except Exception as exc:
