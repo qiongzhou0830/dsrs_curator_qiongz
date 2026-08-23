@@ -28,9 +28,6 @@ import json
 import sys
 from pathlib import Path
 from typing import Any
-import os
-import re
-from agents.llm import complete_json, LLMError
 import pyarrow.parquet as pq
 from agents.parser import parse_question as parse_question_hybrid
 
@@ -39,235 +36,6 @@ FILINGS = OUTPUT / "filings.parquet"
 HOLDINGS = OUTPUT / "holdings.parquet"
 
 VALID_UNITS = {"USD", "SHARES", "COUNT", "PERCENT", "NAME", "DATE", "NONE"}
-
-TASK_SCHEMA = {
-    "type": "object",
-    "properties": {
-        "task": {
-            "type": "string",
-            "enum": [
-                "largest_manager_position",
-                "largest_change",
-                "manager_largest_holding",
-                "distinct_issuers",
-                "portfolio_total",
-                "holding_total",
-                "holding_exists",
-                "filing_type",
-                "count_positions",
-                "option_count",
-                "compare_position",
-                "average_portfolio",
-                "unsupported",
-            ],
-        },
-        "manager": {
-            "type": ["string", "null"],
-        },
-        "issuer": {
-            "type": ["string", "null"],
-        },
-        "quarter": {
-            "type": ["string", "null"],
-        },
-        "from_quarter": {
-            "type": ["string", "null"],
-        },
-        "to_quarter": {
-            "type": ["string", "null"],
-        },
-        "measure": {
-            "type": ["string", "null"],
-            "enum": ["value", "shares", None],
-        },
-        "option_type": {
-            "type": ["string", "null"],
-            "enum": ["Call", "Put", None],
-        },
-        "form_type": {
-            "type": ["string", "null"],
-            "enum": ["13F-HR", "13F-NT", None],
-        },
-    },
-    "required": [
-        "task",
-        "manager",
-        "issuer",
-        "quarter",
-        "from_quarter",
-        "to_quarter",
-        "measure",
-        "option_type",
-        "form_type",
-    ],
-    "additionalProperties": False,
-}
-
-def parse_question_with_llm(question: str) -> dict:
-    """Use the model only to classify the research task and extract fields."""
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "You parse questions about SEC Form 13F data. "
-                "Do not answer the question and do not calculate anything. "
-                "Return only the structured task description. "
-
-                "Choose exactly one task. "
-
-                "largest_manager_position: find which manager reported the "
-                "largest position in a named issuer for one quarter. "
-
-                "largest_change: find which manager had the greatest increase "
-                "or decrease in a named issuer between two quarters. "
-
-                "manager_largest_holding: find the largest holding inside one "
-                "named manager's portfolio for one quarter. "
-
-                "distinct_issuers: count the distinct issuers reported by one "
-                "manager in one quarter. "
-
-                "portfolio_total: get one manager's total reported portfolio "
-                "value for one quarter. "
-
-                "holding_total: sum a named issuer's reported value or shares, "
-                "optionally for one manager, in one quarter. "
-
-                "holding_exists: determine whether one manager directly "
-                "reported a named issuer in one quarter. "
-
-                "filing_type: identify managers that filed a requested form "
-                "such as 13F-NT or 13F-HR in one quarter. "
-
-                "count_positions: count reported holding positions for one "
-                "manager in one quarter. "
-
-                "option_count: find which manager reported the most Call or "
-                "Put positions in one quarter. "
-
-                "compare_position: compare a named issuer between two quarters "
-                "and determine whether the reported position grew, shrank, "
-                "or stayed unchanged. A manager may be named or may be omitted. "
-
-                "average_portfolio: average total portfolio values across "
-                "managers for one quarter. "
-
-                "unsupported: use this when the question requires information "
-                "not contained in the 13F dataset, such as investment return, "
-                "stock price, prediction, performance, or future information. "
-
-                "Task distinction rules: "
-                "If the question asks who, which manager, or which fund had the most, largest, "
-                "highest, or greatest position in a named issuer, use "
-                "largest_manager_position. "
-                "manager_largest_holding is only for questions asking for the largest holding "
-                "inside one specific named manager's portfolio. "
-
-                "Manager extraction rules: "
-                "If a specific fund or investment manager name appears anywhere in the question, "
-                "put that name in manager. "
-                "Possessive forms such as Citadel's, AQR's, Renaissance's, and Third Point's "
-                "still refer to the manager. "
-                "Do not omit a named manager just because the task also contains an issuer. "
-
-                "Entity rules: manager is only a named investment manager or "
-                "fund. Words like 'manager', 'fund', 'who', and 'all' are not "
-                "manager names. issuer is only the company/security being held. "
-                "Never copy an issuer into manager or a manager into issuer. "
-
-                "Use quarter format exactly YYYYQ1 or YYYYQ2, for example "
-                "2026Q1. Convert wording like 'Q1 2026' to '2026Q1'. "
-                "For a two-quarter question fill from_quarter and to_quarter. "
-
-                "Use measure='shares' only when the question explicitly asks "
-                "about shares. Use measure='value' for dollar value, exposure, "
-                "portfolio value, or position value. Otherwise use null. "
-
-                "For option_type use exactly 'Call' or 'Put'. "
-                "For form_type use exactly '13F-HR' or '13F-NT'. "
-                "For every field that does not apply, return JSON null."
-            ),
-        },
-        {
-            "role": "user",
-            "content": question,
-        },
-    ]
-
-    return complete_json(
-        messages,
-        TASK_SCHEMA,
-        max_tokens=300,
-    )
-
-def clean_query(query: dict) -> dict:
-    """Normalize harmless model-output variations."""
-    empty_values = {
-        "none",
-        "null",
-        "unknown",
-        "n/a",
-        "",
-    }
-
-    for field in [
-        "manager",
-        "issuer",
-        "quarter",
-        "from_quarter",
-        "to_quarter",
-        "option_type",
-        "form_type",
-    ]:
-        value = query.get(field)
-
-        if (
-            isinstance(value, str)
-            and value.lower().strip() in empty_values
-        ):
-            query[field] = None
-
-    quarter_map = {
-        "q1 2026": "2026Q1",
-        "q2 2026": "2026Q2",
-        "q3 2026": "2026Q3",
-        "2026 q1": "2026Q1",
-        "2026 q2": "2026Q2",
-        "2026 q3": "2026Q3",
-    }
-
-    for field in [
-        "quarter",
-        "from_quarter",
-        "to_quarter",
-    ]:
-        value = query.get(field)
-
-        if isinstance(value, str):
-            normalized = value.strip().lower()
-
-            if normalized in quarter_map:
-                query[field] = quarter_map[normalized]
-
-    return query
-
-def normalize_query_semantics(query: dict) -> dict:
-    """Fix internally inconsistent model output."""
-
-    # manager_largest_holding means:
-    # find the largest holding inside one specific manager's portfolio.
-    #
-    # If there is no named manager but there is a named issuer,
-    # the question is instead asking which manager has the
-    # largest position in that issuer.
-    if (
-        query.get("task") == "manager_largest_holding"
-        and query.get("manager") is None
-        and query.get("issuer") is not None
-    ):
-        query["task"] = "largest_manager_position"
-
-    return query
 
 def validate_query(query: dict) -> bool:
     """Check that a model-produced task has enough information to execute."""
@@ -352,6 +120,9 @@ def query_to_intent(query: dict) -> dict:
         "metric": "none",
         "option_type": query["option_type"],
         "form_type": query["form_type"],
+        "change_direction": query.get("change_direction"),
+        "require_holding_both_quarters":
+            query.get("require_holding_both_quarters", False),
     }
 
     if task == "largest_manager_position":
@@ -401,182 +172,6 @@ def query_to_intent(query: dict) -> dict:
         intent["metric"] = "value"
 
     return intent
-
-def parse_question_mock(question: str) -> dict:
-    """Simple local parser used only when LLM_MODE=mock."""
-    q = question.lower()
-
-    intent = {
-        "action": "unsupported",
-        "manager": None,
-        "issuer": None,
-        "quarter": None,
-        "from_quarter": None,
-        "to_quarter": None,
-        "metric": "none",
-        "option_type": None,
-    }
-
-    intent["manager"] = find_manager_in_question(question)
-
-    # Extract quarter.
-    if "2026 q1" in q:
-        intent["quarter"] = "2026Q1"
-
-    if "2026 q2" in q:
-        intent["quarter"] = "2026Q2"
-
-    if "2026 q3" in q:
-        intent["quarter"] = "2026Q3"
-
-    # A few common issuer names from the example questions.
-    for issuer in ["apple", "nvidia", "microsoft", "tesla"]:
-        if issuer in q:
-            intent["issuer"] = issuer
-
-    if "distinct issuers" in q:
-        intent["action"] = "distinct_issuers"
-        intent["metric"] = "count"
-
-    elif "total reported value" in q:
-        intent["action"] = "filing_total"
-        intent["metric"] = "value"
-
-    elif "13f-nt" in q:
-        intent["action"] = "filing_type"
-
-    elif "call options" in q:
-        intent["action"] = "option_count"
-        intent["metric"] = "count"
-        intent["option_type"] = "Call"
-
-    elif "added the most" in q:
-        intent["action"] = "largest_change"
-        intent["metric"] = "shares"
-        intent["from_quarter"] = "2026Q1"
-        intent["to_quarter"] = "2026Q2"
-    
-    elif "report any" in q or "holdings directly" in q:
-        intent["action"] = "holding_presence"
-
-    elif "largest position" in q and intent["manager"] is not None:
-        intent["action"] = "manager_largest_position"
-        intent["metric"] = "value"
-    
-    elif "both 2026 q1 and 2026 q2" in q:
-        intent["action"] = "quarter_comparison"
-        intent["metric"] = "value"
-        intent["from_quarter"] = "2026Q1"
-        intent["to_quarter"] = "2026Q2"
-    
-    elif "largest" in q and intent["issuer"] is not None:
-        intent["action"] = "largest_position"
-        intent["metric"] = "value"
-
-    return intent
-
-#helper
-def find_manager_in_question(question: str):
-    """Match a roster manager name mentioned in the question."""
-    filings = pq.read_table(FILINGS).to_pylist()
-    q = question.lower()
-
-    seen = set()
-
-    for row in filings:
-        name = row["fund_name"]
-
-        if name in seen:
-            continue
-
-        seen.add(name)
-
-        full_name = name.lower()
-
-        # Try the full roster name first.
-        if full_name in q:
-            return name
-
-        # Also try a version without common legal suffixes.
-        short_name = full_name
-
-        for suffix in [
-            " llc",
-            " l.p.",
-            " lp",
-            " inc.",
-            " plc",
-        ]:
-            short_name = short_name.replace(suffix, "")
-
-        short_name = short_name.strip()
-
-        if short_name and short_name in q:
-            return name
-
-    return None
-
-def parse_question(question: str) -> dict:
-    """Parse a question in live or mock mode."""
-    if os.environ.get("LLM_MODE", "live").lower() == "mock":
-        return parse_question_mock(question)
-
-    query = parse_question_with_llm(question)
-    query = clean_query(query)
-    query = normalize_query_semantics(query)
-
-    # Prefer deterministic manager matching from the known roster.
-    matched_manager = find_manager_in_question(question)
-
-    if matched_manager is not None:
-        query["manager"] = matched_manager
-
-    else:
-        # The model sometimes copies an issuer into the manager field.
-        if (
-            query.get("manager") is not None
-            and query.get("issuer") is not None
-            and query["manager"].lower() == query["issuer"].lower()
-        ):
-            query["manager"] = None
-
-        # For cross-manager issuer questions, a lone value mistakenly
-        # placed in manager is really the issuer.
-        if (
-            query.get("task") in {
-                "largest_manager_position",
-                "largest_change",
-                "compare_position",
-            }
-            and query.get("issuer") is None
-            and query.get("manager") is not None
-        ):
-            query["issuer"] = query["manager"]
-            query["manager"] = None
-
-    # If a real manager is named and there is no issuer, the question
-    # is asking for that manager's largest holding.
-    if (
-        query.get("task") == "largest_manager_position"
-        and query.get("manager") is not None
-        and query.get("issuer") is None
-    ):
-        query["task"] = "manager_largest_holding"
-
-    if not validate_query(query):
-        return {
-            "action": "unsupported",
-            "manager": None,
-            "issuer": None,
-            "quarter": query.get("quarter"),
-            "from_quarter": query.get("from_quarter"),
-            "to_quarter": query.get("to_quarter"),
-            "metric": "none",
-            "option_type": None,
-            "form_type": None,
-        }
-
-    return query_to_intent(query)
 
 def load_data():
     """Load both parquet files as Python rows."""
@@ -713,20 +308,237 @@ def issuer_matches(name: str, issuer: str) -> bool:
     if reported == target:
         return True
 
-    # Clear substring match.
-    if target in reported or reported in target:
-        return True
-
     # Common public-name aliases.
     aliases = ISSUER_ALIASES.get(target, [])
 
     for alias in aliases:
         alias = normalize_issuer(alias)
 
-        if alias == reported or alias in reported:
+        if alias == reported:
             return True
 
     return False
+
+def get_filing_by_accession(filings: list[dict]) -> dict:
+    return {
+        f["accession_number"]: f
+        for f in filings
+    }
+
+def filter_holdings(
+    holdings: list[dict],
+    filings: list[dict],
+    *,
+    quarter: str | None = None,
+    quarters: set[str] | None = None,
+    manager: str | None = None,
+    issuer: str | None = None,
+    option_type: str | None = None,
+) -> list[dict]:
+    """
+    SQL-like WHERE + JOIN.
+
+    Returns holding rows with fund_name attached.
+    """
+    filing_map = get_filing_by_accession(filings)
+
+    rows = []
+
+    for row in holdings:
+        if quarter is not None and row["report_quarter"] != quarter:
+            continue
+
+        if quarters is not None and row["report_quarter"] not in quarters:
+            continue
+
+        if issuer is not None and not issuer_matches(
+            row["name_of_issuer"],
+            issuer,
+        ):
+            continue
+
+        if option_type is not None:
+            reported_option = row["put_call"]
+
+            if (
+                reported_option is None
+                or reported_option.strip().lower() != option_type.lower()
+            ):
+                continue
+
+        filing = filing_map.get(row["accession_number"])
+
+        if filing is None:
+            continue
+
+        if manager is not None and filing["fund_name"] != manager:
+            continue
+
+        new_row = dict(row)
+        new_row["fund_name"] = filing["fund_name"]
+
+        rows.append(new_row)
+
+    return rows
+
+
+def aggregate_by_manager(
+    rows: list[dict],
+    *,
+    metric: str,
+) -> dict:
+    """
+    SQL-like GROUP BY manager.
+
+    Keeps both aggregate values and source accession numbers.
+    """
+    if metric == "value":
+        field = "value"
+    elif metric == "shares":
+        field = "ssh_prnamt"
+    else:
+        return {}
+
+    result = {}
+
+    for row in rows:
+        manager = row["fund_name"]
+
+        if manager not in result:
+            result[manager] = {
+                "value": 0,
+                "sources": set(),
+            }
+
+        result[manager]["value"] += row[field]
+        result[manager]["sources"].add(
+            row["accession_number"]
+        )
+
+    return result
+
+
+def aggregate_by_manager_quarter(
+    rows: list[dict],
+    *,
+    metric: str,
+) -> dict:
+    """
+    SQL-like GROUP BY manager, quarter.
+    """
+    if metric == "value":
+        field = "value"
+    elif metric == "shares":
+        field = "ssh_prnamt"
+    else:
+        return {}
+
+    result = {}
+
+    for row in rows:
+        manager = row["fund_name"]
+        quarter = row["report_quarter"]
+
+        if manager not in result:
+            result[manager] = {}
+
+        if quarter not in result[manager]:
+            result[manager][quarter] = {
+                "value": 0,
+                "sources": set(),
+            }
+
+        result[manager][quarter]["value"] += row[field]
+        result[manager][quarter]["sources"].add(
+            row["accession_number"]
+        )
+
+    return result
+
+def filter_filings(
+    filings: list[dict],
+    *,
+    quarter: str | None = None,
+    manager: str | None = None,
+    form_types: set[str] | None = None,
+) -> list[dict]:
+    """
+    SQL-like WHERE for filing-level queries.
+    """
+    rows = []
+
+    for filing in filings:
+        if (
+            quarter is not None
+            and filing["report_quarter"] != quarter
+        ):
+            continue
+
+        if (
+            manager is not None
+            and filing["fund_name"] != manager
+        ):
+            continue
+
+        if (
+            form_types is not None
+            and filing["form_type"] not in form_types
+        ):
+            continue
+
+        rows.append(filing)
+
+    return rows
+
+def get_scope_sources(
+    filings: list[dict],
+    *,
+    quarter: str,
+    manager: str | None = None,
+) -> list[str]:
+    matches = filter_filings(
+        filings,
+        quarter=quarter,
+        manager=manager,
+    )
+
+    return sorted({
+        filing["accession_number"]
+        for filing in matches
+    })
+
+def get_manager_quarter_sources(
+    filings: list[dict],
+    manager: str,
+    quarters: set[str],
+) -> list[str]:
+    matches = [
+        filing
+        for filing in filings
+        if filing["fund_name"] == manager
+        and filing["report_quarter"] in quarters
+    ]
+
+    return sorted({
+        filing["accession_number"]
+        for filing in matches
+    })
+
+def filter_metric_rows(
+    rows: list[dict],
+    metric: str,
+) -> list[dict]:
+    if metric == "value":
+        return rows
+
+    if metric == "shares":
+        return [
+            row
+            for row in rows
+            if row["ssh_prnamt_type"] == "SH"
+        ]
+
+    return []
 
 def answer_intent(intent: dict) -> dict:
     """Compute the answer deterministically from the parquet files."""
@@ -759,10 +571,29 @@ def answer_intent(intent: dict) -> dict:
     if action == "largest_position":
         metric = intent["metric"]
 
+        rows = filter_holdings(
+            holdings,
+            filings,
+            quarter=quarter,
+            issuer=issuer,
+        )
+
+        rows = filter_metric_rows(
+            rows,
+            metric,
+        )
+
+        if not rows:
+            return {
+                "answer": None,
+                "unit": "NONE",
+                "sources": [],
+            }
+
         if metric == "value":
-            value_field = "value"
+            field = "value"
         elif metric == "shares":
-            value_field = "ssh_prnamt"
+            field = "ssh_prnamt"
         else:
             return {
                 "answer": None,
@@ -770,92 +601,64 @@ def answer_intent(intent: dict) -> dict:
                 "sources": [],
             }
 
-        totals = {}
-        sources = {}
-
-        filing_by_accession = {
-            f["accession_number"]: f
-            for f in filings
-        }
-
-        for row in holdings:
-            if row["report_quarter"] != quarter:
-                continue
-
-            if not issuer_matches(
-                row["name_of_issuer"],
-                issuer,
-            ):
-                continue
-
-            filing = filing_by_accession.get(
-                row["accession_number"]
-            )
-
-            if filing is None:
-                continue
-
-            fund_name = filing["fund_name"]
-
-            totals[fund_name] = (
-                totals.get(fund_name, 0)
-                + row[value_field]
-            )
-
-            sources.setdefault(
-                fund_name,
-                set(),
-            ).add(row["accession_number"])
-
-        if not totals:
-            return {
-                "answer": None,
-                "unit": "NONE",
-                "sources": [],
-            }
-
-        winner = max(
-            totals,
-            key=lambda name: (
-                totals[name],
-                name,
+        largest = max(
+            rows,
+            key=lambda row: (
+                row[field],
+                row["fund_name"],
+                row["accession_number"],
             ),
         )
 
         return {
-            "answer": winner,
+            "answer": largest["fund_name"],
             "unit": "NAME",
-            "sources": sorted(sources[winner]),
+            "sources": [largest["accession_number"]],
         }
 
     # 2. How many distinct issuers did one manager report?
     if action == "distinct_issuers":
-        filing_matches = [
-            f for f in filings
-            if f["fund_name"] == manager
-            and f["report_quarter"] == quarter
-        ]
+        rows = filter_holdings(
+            holdings,
+            filings,
+            quarter=quarter,
+            manager=manager,
+        )
 
-        if not filing_matches:
+        if not rows:
+            scope_sources = get_scope_sources(
+                filings,
+                quarter=quarter,
+                manager=manager,
+            )
+
+            if not scope_sources:
+                return {
+                    "answer": None,
+                    "unit": "NONE",
+                    "sources": [],
+                }
+
             return {
-                "answer": None,
-                "unit": "NONE",
-                "sources": [],
+                "answer": 0,
+                "unit": "COUNT",
+                "sources": scope_sources,
             }
-
-        accession = filing_matches[0]["accession_number"]
 
         issuers = {
             row["name_of_issuer"]
-            for row in holdings
-            if row["accession_number"] == accession
+            for row in rows
         }
 
         return {
             "answer": len(issuers),
             "unit": "COUNT",
-            "sources": [accession],
+            "sources": sorted({
+                row["accession_number"]
+                for row in rows
+            }),
         }
+
 
     # 3. What was one manager's total reported portfolio value?
     if action == "filing_total":
@@ -896,11 +699,11 @@ def answer_intent(intent: dict) -> dict:
             f"{requested_form}/A",
         }
 
-        matches = [
-            f for f in filings
-            if f["report_quarter"] == quarter
-            and f["form_type"] in accepted_forms
-        ]
+        matches = filter_filings(
+            filings,
+            quarter=quarter,
+            form_types=accepted_forms,
+        )
 
         if not matches:
             return {
@@ -910,11 +713,18 @@ def answer_intent(intent: dict) -> dict:
             }
 
         return {
-            "answer": [f["fund_name"] for f in matches],
+            "answer": [
+                f["fund_name"]
+                for f in matches
+            ],
             "unit": "NAME",
-            "sources": [f["accession_number"] for f in matches],
+            "sources": [
+                f["accession_number"]
+                for f in matches
+            ],
         }
-    # 5. Which manager added the most shares of an issuer between two quarters?
+
+    # 5. Which manager changed a named issuer the most between two quarters?
     if action == "largest_change":
         from_quarter = intent["from_quarter"]
         to_quarter = intent["to_quarter"]
@@ -923,6 +733,7 @@ def answer_intent(intent: dict) -> dict:
         if (
             from_quarter not in valid_quarters
             or to_quarter not in valid_quarters
+            or from_quarter == to_quarter
         ):
             return {
                 "answer": None,
@@ -930,10 +741,107 @@ def answer_intent(intent: dict) -> dict:
                 "sources": [],
             }
 
-        if metric == "value":
-            value_field = "value"
-        elif metric == "shares":
-            value_field = "ssh_prnamt"
+        if metric not in {"value", "shares"}:
+            return {
+                "answer": None,
+                "unit": "NONE",
+                "sources": [],
+            }
+
+        rows = filter_holdings(
+            holdings,
+            filings,
+            quarters={from_quarter, to_quarter},
+            issuer=issuer,
+        )
+
+        rows = filter_metric_rows(
+            rows,
+            metric,
+        )
+
+        grouped = aggregate_by_manager_quarter(
+            rows,
+            metric=metric,
+        )
+
+        require_both = intent.get(
+            "require_holding_both_quarters",
+            False,
+        )
+
+        candidates = []
+
+        for fund_name, quarter_data in grouped.items():
+            before_data = quarter_data.get(from_quarter)
+            after_data = quarter_data.get(to_quarter)
+
+            before = (
+                before_data["value"]
+                if before_data is not None
+                else 0
+            )
+
+            after = (
+                after_data["value"]
+                if after_data is not None
+                else 0
+            )
+
+            if require_both and (
+                before <= 0
+                or after <= 0
+            ):
+                continue
+
+            sources = get_manager_quarter_sources(
+                filings,
+                fund_name,
+                {from_quarter, to_quarter},
+            )
+
+            candidates.append({
+                "manager": fund_name,
+                "change": after - before,
+                "sources": sources,
+            })
+
+        if not candidates:
+            return {
+                "answer": None,
+                "unit": "NONE",
+                "sources": [],
+            }
+
+        change_direction = intent.get("change_direction") or "increase"
+
+        if change_direction == "increase":
+            best = max(
+                candidates,
+                key=lambda item: (
+                    item["change"],
+                    item["manager"],
+                ),
+            )
+
+        elif change_direction == "decrease":
+            best = min(
+                candidates,
+                key=lambda item: (
+                    item["change"],
+                    item["manager"],
+                ),
+            )
+
+        elif change_direction == "absolute":
+            best = max(
+                candidates,
+                key=lambda item: (
+                    abs(item["change"]),
+                    item["manager"],
+                ),
+            )
+
         else:
             return {
                 "answer": None,
@@ -941,119 +849,21 @@ def answer_intent(intent: dict) -> dict:
                 "sources": [],
             }
 
-        filing_by_accession = {
-            f["accession_number"]: f
-            for f in filings
-        }
-
-        # Start with every manager that has filings in both quarters.
-        manager_values = {}
-
-        for f in filings:
-            if f["report_quarter"] not in {
-                from_quarter,
-                to_quarter,
-            }:
-                continue
-
-            name = f["fund_name"]
-
-            if name not in manager_values:
-                manager_values[name] = {
-                    from_quarter: 0,
-                    to_quarter: 0,
-                    "sources": {},
-                }
-
-            manager_values[name]["sources"][
-                f["report_quarter"]
-            ] = f["accession_number"]
-
-        # Add the issuer's reported value/shares.
-        for row in holdings:
-            if row["report_quarter"] not in {
-                from_quarter,
-                to_quarter,
-            }:
-                continue
-
-            if not issuer_matches(
-                row["name_of_issuer"],
-                issuer,
-            ):
-                continue
-
-            filing = filing_by_accession.get(
-                row["accession_number"]
-            )
-
-            if filing is None:
-                continue
-
-            name = filing["fund_name"]
-
-            if name not in manager_values:
-                continue
-
-            manager_values[name][
-                row["report_quarter"]
-            ] += row[value_field]
-
-        if not manager_values:
-            return {
-                "answer": None,
-                "unit": "NONE",
-                "sources": [],
-            }
-
-        best_manager = None
-        best_change = None
-
-        for name, values in manager_values.items():
-            change = (
-                values[to_quarter]
-                - values[from_quarter]
-            )
-
-            if (
-                best_change is None
-                or change > best_change
-                or (
-                    change == best_change
-                    and name < best_manager
-                )
-            ):
-                best_change = change
-                best_manager = name
-
-        if best_manager is None:
-            return {
-                "answer": None,
-                "unit": "NONE",
-                "sources": [],
-            }
-
-        best_sources = sorted(
-            manager_values[
-                best_manager
-            ]["sources"].values()
-        )
-
         return {
-            "answer": best_manager,
+            "answer": best["manager"],
             "unit": "NAME",
-            "sources": best_sources,
+            "sources": sorted(best["sources"]),
         }
 
     # 6. Did one manager report an issuer directly?
     if action == "holding_presence":
-        filing_matches = [
-            f for f in filings
-            if f["fund_name"] == manager
-            and f["report_quarter"] == quarter
-        ]
+        filing_matches = filter_filings(
+            filings,
+            quarter=quarter,
+            manager=manager,
+        )
 
-        if not filing_matches:
+        if len(filing_matches) != 1:
             return {
                 "answer": None,
                 "unit": "NONE",
@@ -1081,43 +891,49 @@ def answer_intent(intent: dict) -> dict:
     if action == "option_count":
         option_type = intent["option_type"]
 
-        counts = {}
-
-        for row in holdings:
-            if row["report_quarter"] != quarter:
-                continue
-
-            if row["put_call"] != option_type:
-                continue
-
-            filing = next(
-                f for f in filings
-                if f["accession_number"] == row["accession_number"]
-            )
-
-            name = filing["fund_name"]
-
-            if name not in counts:
-                counts[name] = {
-                    "count": 0,
-                    "sources": set(),
-                }
-
-            counts[name]["count"] += 1
-            counts[name]["sources"].add(
-                row["accession_number"]
-            )
-
-        if not counts:
+        if option_type not in {"Call", "Put"}:
             return {
                 "answer": None,
                 "unit": "NONE",
                 "sources": [],
             }
 
+        rows = filter_holdings(
+            holdings,
+            filings,
+            quarter=quarter,
+            option_type=option_type,
+        )
+
+        if not rows:
+            return {
+                "answer": None,
+                "unit": "NONE",
+                "sources": [],
+            }
+
+        counts = {}
+
+        for row in rows:
+            manager_name = row["fund_name"]
+
+            if manager_name not in counts:
+                counts[manager_name] = {
+                    "count": 0,
+                    "sources": set(),
+                }
+
+            counts[manager_name]["count"] += 1
+            counts[manager_name]["sources"].add(
+                row["accession_number"]
+            )
+
         best_manager = max(
             counts,
-            key=lambda name: counts[name]["count"],
+            key=lambda name: (
+                counts[name]["count"],
+                name,
+            ),
         )
 
         return {
@@ -1130,25 +946,12 @@ def answer_intent(intent: dict) -> dict:
 
     # 8. What was one manager's largest position?
     if action == "manager_largest_position":
-        filing_matches = [
-            f for f in filings
-            if f["fund_name"] == manager
-            and f["report_quarter"] == quarter
-        ]
-
-        if not filing_matches:
-            return {
-                "answer": None,
-                "unit": "NONE",
-                "sources": [],
-            }
-
-        accession = filing_matches[0]["accession_number"]
-
-        rows = [
-            row for row in holdings
-            if row["accession_number"] == accession
-        ]
+        rows = filter_holdings(
+            holdings,
+            filings,
+            quarter=quarter,
+            manager=manager,
+        )
 
         if not rows:
             return {
@@ -1159,7 +962,10 @@ def answer_intent(intent: dict) -> dict:
 
         largest = max(
             rows,
-            key=lambda row: row["value"],
+            key=lambda row: (
+                row["value"],
+                row["name_of_issuer"],
+            ),
         )
 
         return {
@@ -1168,78 +974,64 @@ def answer_intent(intent: dict) -> dict:
                 largest["value"],
             ],
             "unit": "USD",
-            "sources": [accession],
+            "sources": [largest["accession_number"]],
         }
-    
+
     # 9. Which managers held an issuer in both quarters, and did each position grow or shrink?
     if action == "quarter_comparison":
         metric = intent["metric"]
         from_quarter = intent["from_quarter"]
         to_quarter = intent["to_quarter"]
 
-        if metric == "value":
-            value_field = "value"
-        elif metric == "shares":
-            value_field = "ssh_prnamt"
-        else:
+        if metric not in {"value", "shares"}:
             return {
                 "answer": None,
                 "unit": "NONE",
                 "sources": [],
             }
 
-        # If a manager was named, compare only that manager.
-        if manager is not None:
-            managers = [manager]
-        else:
-             managers = sorted({
-                f["fund_name"]
-                for f in filings
-            })
+        rows = filter_holdings(
+            holdings,
+            filings,
+            quarters={from_quarter, to_quarter},
+            manager=manager,
+            issuer=issuer,
+        )
+
+        rows = filter_metric_rows(
+            rows,
+            metric,
+        )
+
+        grouped = aggregate_by_manager_quarter(
+            rows,
+            metric=metric,
+        )
+
+        if not grouped:
+            return {
+                "answer": None,
+                "unit": "NONE",
+                "sources": [],
+            }
 
         results = []
-        all_sources = []
+        all_sources = set()
 
-        for fund_name in managers:
-            values = {}
-            sources = []
+        for fund_name, quarter_data in grouped.items():
+            before_data = quarter_data.get(from_quarter)
+            after_data = quarter_data.get(to_quarter)
 
-            for q in [from_quarter, to_quarter]:
-                filing_matches = [
-                    f for f in filings
-                    if f["fund_name"] == fund_name
-                    and f["report_quarter"] == q
-                ]
-
-                if len(filing_matches) != 1:
-                    values[q] = None
-                    continue
-
-                filing = filing_matches[0]
-                sources.append(filing["accession_number"])
-
-                rows = [
-                    row for row in holdings
-                    if row["accession_number"] == filing["accession_number"]
-                    and issuer_matches(
-                        row["name_of_issuer"],
-                        issuer,
-                    )
-                ]
-
-                values[q] = sum(
-                    row[value_field]
-                    for row in rows
-                )
-
-            if (
-                values.get(from_quarter) is None
-                or values.get(to_quarter) is None
-            ):
+            # compare_position means the holding must exist
+            # in both quarters.
+            if before_data is None or after_data is None:
                 continue
 
-            before = values[from_quarter]
-            after = values[to_quarter]
+            before = before_data["value"]
+            after = after_data["value"]
+
+            if before <= 0 or after <= 0:
+                continue
 
             if after > before:
                 direction = "grow"
@@ -1248,20 +1040,25 @@ def answer_intent(intent: dict) -> dict:
             else:
                 direction = "unchanged"
 
-            # One named manager -> answer only the direction.
+            sources = get_manager_quarter_sources(
+                filings,
+                fund_name,
+                {from_quarter, to_quarter},
+            )
+
+            # If one manager was explicitly named,
+            # return only that manager's direction.
             if manager is not None:
                 return {
                     "answer": direction,
                     "unit": "NONE",
-                    "sources": sorted(set(sources)),
+                    "sources": sorted(sources),
                 }
 
-            # No manager named -> return all matching managers Only include managers that reported the issuer in both quarters.
-            if before > 0 and after > 0:
-                results.append(
-                    f"{fund_name}: {direction}"
-                )
-                all_sources.extend(sources)
+            results.append(
+                f"{fund_name}: {direction}"
+            )
+            all_sources.update(sources)
 
         if not results:
             return {
@@ -1271,22 +1068,30 @@ def answer_intent(intent: dict) -> dict:
             }
 
         return {
-            "answer": results,
+            "answer": sorted(results),
             "unit": "NAME",
-            "sources": sorted(set(all_sources)),
+            "sources": sorted(all_sources),
         }
-    
+
     # Sum reported value or shares.
     if action == "sum":
         metric = intent["metric"]
 
-        # Portfolio total for one manager.
+        if metric not in {"value", "shares"}:
+            return {
+                "answer": None,
+                "unit": "NONE",
+                "sources": [],
+            }
+
+        # Whole portfolio total:
+        # use the filing-level total because it is the reported portfolio total.
         if manager is not None and issuer is None and metric == "value":
-            matches = [
-                f for f in filings
-                if f["fund_name"] == manager
-                and f["report_quarter"] == quarter
-            ]
+            matches = filter_filings(
+                filings,
+                quarter=quarter,
+                manager=manager,
+            )
 
             if len(matches) != 1:
                 return {
@@ -1310,100 +1115,101 @@ def answer_intent(intent: dict) -> dict:
                 "sources": [filing["accession_number"]],
             }
 
-        # Otherwise sum matching holdings rows.
-        matches = []
+        rows = filter_holdings(
+            holdings,
+            filings,
+            quarter=quarter,
+            manager=manager,
+            issuer=issuer,
+        )
 
-        for row in holdings:
-            if row["report_quarter"] != quarter:
-                continue
+        rows = filter_metric_rows(
+            rows,
+            metric,
+        )
 
-            filing = next(
-                f for f in filings
-                if f["accession_number"] == row["accession_number"]
+        if not rows:
+            scope_sources = get_scope_sources(
+                filings,
+                quarter=quarter,
+                manager=manager,
             )
 
-            if manager is not None and filing["fund_name"] != manager:
-                continue
+            if not scope_sources:
+                return {
+                    "answer": None,
+                    "unit": "NONE",
+                    "sources": [],
+                }
 
-            if issuer is not None and not issuer_matches(
-                row["name_of_issuer"],
-                issuer,
-            ):
-                continue
-
-            matches.append(row)
-
-        if not matches:
             return {
-                "answer": None,
-                "unit": "NONE",
-                "sources": [],
+                "answer": 0,
+                "unit": "USD" if metric == "value" else "SHARES",
+                "sources": scope_sources,
             }
 
         if metric == "value":
-            answer = sum(row["value"] for row in matches)
+            answer = sum(
+                row["value"]
+                for row in rows
+            )
             unit = "USD"
 
-        elif metric == "shares":
-            answer = sum(row["ssh_prnamt"] for row in matches)
-            unit = "SHARES"
-
         else:
-            return {
-                "answer": None,
-                "unit": "NONE",
-                "sources": [],
-            }
+            answer = sum(
+                row["ssh_prnamt"]
+                for row in rows
+            )
+            unit = "SHARES"
 
         return {
             "answer": answer,
             "unit": unit,
             "sources": sorted({
                 row["accession_number"]
-                for row in matches
+                for row in rows
             }),
         }
-    
+
     # Count reported holding rows.
     if action == "count_positions":
-        matches = []
+        rows = filter_holdings(
+            holdings,
+            filings,
+            quarter=quarter,
+            manager=manager,
+            issuer=issuer,
+        )
 
-        for row in holdings:
-            if row["report_quarter"] != quarter:
-                continue
-
-            filing = next(
-                f for f in filings
-                if f["accession_number"] == row["accession_number"]
+        if not rows:
+            scope_sources = get_scope_sources(
+                filings,
+                quarter=quarter,
+                manager=manager,
             )
 
-            if manager is not None and filing["fund_name"] != manager:
-                continue
+            if not scope_sources:
+                return {
+                    "answer": None,
+                    "unit": "NONE",
+                    "sources": [],
+                }
 
-            if issuer is not None and not issuer_matches(
-                row["name_of_issuer"],
-                issuer,
-            ):
-                continue
-
-            matches.append(row)
-
-        if not matches:
             return {
                 "answer": 0,
                 "unit": "COUNT",
-                "sources": [],
+                "sources": scope_sources,
             }
 
         return {
-            "answer": len(matches),
+            "answer": len(rows),
             "unit": "COUNT",
             "sources": sorted({
                 row["accession_number"]
-                for row in matches
+                for row in rows
             }),
         }
-    
+
     # Average portfolio value across all managers.
     if action == "average":
         metric = intent["metric"]

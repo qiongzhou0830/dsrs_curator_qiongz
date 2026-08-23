@@ -140,18 +140,90 @@ def manager_variants(name: str) -> list[str]:
 
     return sorted(variants, key=len, reverse=True)
 
+def manager_aliases() -> dict[str, str]:
+    """
+    Build conservative short aliases from the actual manager roster.
+
+    Only keep an alias when it identifies exactly one manager.
+    """
+    candidates = {}
+
+    for manager in manager_names():
+        variants = manager_variants(manager)
+
+        if not variants:
+            continue
+
+        shortest = min(variants, key=len)
+
+        cleaned = re.sub(
+            r"[^a-z0-9]+",
+            " ",
+            shortest,
+        ).strip()
+
+        words = cleaned.split()
+
+        # Leading "the" is an article, not a meaningful manager alias.
+        if words and words[0] == "the":
+            words = words[1:]
+
+        if not words:
+            continue
+
+        for end in range(1, len(words) + 1):
+            alias = " ".join(words[:end])
+
+            # Avoid extremely short/noisy aliases.
+            if len(alias) < 3:
+                continue
+
+            candidates.setdefault(
+                alias,
+                set(),
+            ).add(manager)
+
+    aliases = {}
+
+    for alias, managers in candidates.items():
+        if len(managers) == 1:
+            aliases[alias] = next(iter(managers))
+
+    return aliases
+
+def extract_require_holding_both_quarters(
+    question: str,
+) -> bool:
+    text = normalize_text(question)
+
+    patterns = [
+        r"\bheld\b.*\bin both quarters\b",
+        r"\bholding\b.*\bin both quarters\b",
+        r"\bowned\b.*\bin both quarters\b",
+        r"\bheld\b.*\bacross both quarters\b",
+        r"\bholding\b.*\bacross both quarters\b",
+        r"\bowned\b.*\bacross both quarters\b",
+        r"\bcontinued holding\b",
+        r"\bcontinued to hold\b",
+    ]
+
+    return any(
+        re.search(pattern, text)
+        for pattern in patterns
+    )
 
 def extract_manager(question: str) -> str | None:
     """
-    Match managers only against the actual manager roster.
+    Match managers against the actual manager roster.
 
-    Prefer the longest matching manager name so shorter aliases do not
-    accidentally win.
+    Prefer full/legal-suffix variants first, then fall back to a
+    roster-derived short alias only when that alias is unique.
     """
     text = normalize_text(question)
 
     matches = []
 
+    # First: conservative full-name / suffix-stripped matching.
     for manager in manager_names():
         for variant in manager_variants(manager):
             pattern = r"(?<!\w)" + re.escape(variant) + r"(?!\w)"
@@ -160,20 +232,55 @@ def extract_manager(question: str) -> str | None:
                 matches.append((len(variant), manager))
                 break
 
-    if not matches:
+    if matches:
+        matches.sort(reverse=True)
+
+        longest_length = matches[0][0]
+
+        longest = {
+            manager
+            for length, manager in matches
+            if length == longest_length
+        }
+
+        if len(longest) == 1:
+            return next(iter(longest))
+
         return None
 
-    matches.sort(reverse=True)
+    # Second: unique short aliases derived from the same roster.
+    cleaned_text = re.sub(
+        r"[^a-z0-9]+",
+        " ",
+        text,
+    ).strip()
 
-    longest_length = matches[0][0]
-    longest = {
+    alias_matches = []
+
+    for alias, manager in manager_aliases().items():
+        pattern = r"(?<!\w)" + re.escape(alias) + r"(?!\w)"
+
+        if re.search(pattern, cleaned_text):
+            alias_matches.append(
+                (len(alias), manager)
+            )
+
+    if not alias_matches:
+        return None
+
+    # Prefer the longest matching alias.
+    alias_matches.sort(reverse=True)
+
+    longest_length = alias_matches[0][0]
+
+    longest_managers = {
         manager
-        for length, manager in matches
+        for length, manager in alias_matches
         if length == longest_length
     }
 
-    if len(longest) == 1:
-        return next(iter(longest))
+    if len(longest_managers) == 1:
+        return next(iter(longest_managers))
 
     return None
 
@@ -268,6 +375,72 @@ def extract_measure(question: str) -> str | None:
 
     if any(term in text for term in value_terms):
         return "value"
+
+    return None
+
+def extract_change_direction(question: str) -> str | None:
+    """
+    Determine what kind of cross-quarter change the question asks for.
+    """
+    text = normalize_text(question)
+
+    paired_patterns = [
+        r"\bincrease or decrease\b",
+        r"\bincreased or decreased\b",
+        r"\bgrow or shrink\b",
+        r"\bgrew or shrank\b",
+        r"\bgrow or shrank\b",
+        r"\bgrew or shrink\b",
+    ]
+
+    if any(re.search(pattern, text) for pattern in paired_patterns):
+        return None
+
+    decrease_patterns = [
+        r"\bdecrease\b",
+        r"\bdecreased\b",
+        r"\bdecreasing\b",
+        r"\bdecline\b",
+        r"\bdeclined\b",
+        r"\bdrop\b",
+        r"\bdropped\b",
+        r"\breduce\b",
+        r"\breduced\b",
+        r"\bshrink\b",
+        r"\bshrank\b",
+        r"\bsold\b.*\bmost\b",
+    ]
+
+    if any(re.search(pattern, text) for pattern in decrease_patterns):
+        return "decrease"
+
+    increase_patterns = [
+        r"\bincrease\b",
+        r"\bincreased\b",
+        r"\bincreasing\b",
+        r"\bgrow\b",
+        r"\bgrew\b",
+        r"\badd\b",
+        r"\badded\b",
+        r"\badding\b",
+        r"\bbought\b.*\bmost\b",
+        r"\baccumulate\b",
+        r"\baccumulated\b",
+    ]
+
+    if any(re.search(pattern, text) for pattern in increase_patterns):
+        return "increase"
+
+    absolute_patterns = [
+        r"\bchanged\b.*\bmost\b",
+        r"\bchange\b.*\bmost\b",
+        r"\blargest change\b",
+        r"\bbiggest change\b",
+        r"\bgreatest change\b",
+    ]
+
+    if any(re.search(pattern, text) for pattern in absolute_patterns):
+        return "absolute"
 
     return None
 
@@ -694,6 +867,8 @@ def build_query(
     measure: str | None,
     option_type: str | None,
     form_type: str | None,
+    change_direction: str | None = None,
+    require_holding_both_quarters: bool = False,
 ) -> dict:
     quarter = quarters[0] if quarters else None
 
@@ -714,6 +889,9 @@ def build_query(
         "measure": measure,
         "option_type": option_type,
         "form_type": form_type,
+        "change_direction": change_direction,
+        "require_holding_both_quarters":
+            require_holding_both_quarters,
     }
 
 
@@ -726,9 +904,13 @@ def parse_question(question: str) -> dict:
     3. Let the LLM handle genuinely semantic / paraphrased questions.
     4. Never let the LLM calculate the final answer.
     """
+    require_holding_both_quarters = (
+        extract_require_holding_both_quarters(question)
+    )
     manager = extract_manager(question)
     quarters = extract_quarters(question)
     measure = extract_measure(question)
+    change_direction = extract_change_direction(question)
     option_type = extract_option_type(question)
     form_type = extract_form_type(question)
 
@@ -779,6 +961,8 @@ def parse_question(question: str) -> dict:
             measure=measure,
             option_type=option_type,
             form_type=form_type,
+            change_direction=change_direction,
+            require_holding_both_quarters=require_holding_both_quarters,
         )
 
     # Do not contact a model in mock mode.
@@ -791,6 +975,8 @@ def parse_question(question: str) -> dict:
             measure=measure,
             option_type=option_type,
             form_type=form_type,
+            change_direction=change_direction,
+            require_holding_both_quarters=require_holding_both_quarters,
         )
 
     # Genuinely semantic question: ask the LLM for task + issuer.
@@ -821,4 +1007,6 @@ def parse_question(question: str) -> dict:
         measure=measure,
         option_type=option_type,
         form_type=form_type,
+        change_direction=change_direction,
+        require_holding_both_quarters=require_holding_both_quarters,
     )
