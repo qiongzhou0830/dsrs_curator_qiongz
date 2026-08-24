@@ -27,7 +27,7 @@ Mark what you completed. Partial work still gets read.
 - [X] 4 · Serve
 - [X] 5 · Show
 - [ ] Bonus 1 — Notice attribution
-- [ ] Bonus 2 — CUSIP validation
+- [X] Bonus 2 — CUSIP validation
 
 ## Checklist
 
@@ -52,6 +52,7 @@ All holdings had 9-character CUSIPs and integer-valued value, share, and voting 
 Because the 13F-NT notice has no information table, I stored its `primary_doc.xml` so the pipeline still preserves one XML file per filing.
 
 For questions using the word "position", I treat one row in `holdings.parquet` as one position, following the schema grain of "one row per position". I therefore keep option rows unless the question explicitly says to exclude them, since the challenge docs do not define a different rule.
+
 ## Video sharing
 
 We may share your video publicly to show what candidates built. If you would rather we
