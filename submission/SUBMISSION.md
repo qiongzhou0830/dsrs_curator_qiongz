@@ -36,7 +36,7 @@ Mark what you completed. Partial work still gets read.
 - [X] Video uploaded to MediaSpace, visibility **Unlisted**, link tested
 - [X] Repository URL submitted at <https://ikompete.dsrs.illinois.edu/competition/16>
 - [X] `python verify.py` passes
-- [ ] Pipeline run twice; output is byte-identical
+- [X] Pipeline run twice; output is byte-identical
 - [X] `output/filings.parquet`, `output/holdings.parquet` committed
 - [X] `output/filers.csv`, `output/filings/`, `submission/eda.py` committed
 - [X] `DEPENDENCIES.md`, `AI_USAGE.md`, and `ASSUMPTIONS.md` filled in
