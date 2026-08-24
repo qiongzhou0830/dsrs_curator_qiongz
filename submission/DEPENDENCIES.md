@@ -12,11 +12,10 @@ one deliberately.
 
 ## Anything you considered and rejected
 
-Optional, but the more interesting half. A library you looked at and decided against —
-and why — says more than the ones you kept.
+I did not add any additional Python dependencies beyond those already provided by the challenge.
 
 ## Note
 
-Libraries that wrap 13F retrieval and parsing end to end will not, on their own,
-satisfy the schema or the quality report, and we will ask you to explain the edge cases
-in your output regardless of how you produced it. If you can explain it, you own it.
+I avoided adding a 13F-specific retrieval or parsing library because I wanted the filing retrieval, XML parsing, schema handling, and edge cases to remain explicit in my own pipeline.
+
+For local Chapter 4 testing, I used Ollama outside the submitted Python dependency set. It was only used as a local model server and is not required by the grading pipeline.
