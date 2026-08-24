@@ -946,11 +946,18 @@ def answer_intent(intent: dict) -> dict:
 
     # 8. What was one manager's largest position?
     if action == "manager_largest_position":
+        metric = intent["metric"]
+
         rows = filter_holdings(
             holdings,
             filings,
             quarter=quarter,
             manager=manager,
+        )
+
+        rows = filter_metric_rows(
+            rows,
+            metric,
         )
 
         if not rows:
@@ -960,20 +967,34 @@ def answer_intent(intent: dict) -> dict:
                 "sources": [],
             }
 
+        if metric == "value":
+            field = "value"
+            unit = "USD"
+        elif metric == "shares":
+            field = "ssh_prnamt"
+            unit = "SHARES"
+        else:
+            return {
+                "answer": None,
+                "unit": "NONE",
+                "sources": [],
+            }
+
         largest = max(
             rows,
             key=lambda row: (
-                row["value"],
+                row[field],
                 row["name_of_issuer"],
+                row["accession_number"],
             ),
         )
 
         return {
             "answer": [
                 largest["name_of_issuer"],
-                largest["value"],
+                largest[field],
             ],
-            "unit": "USD",
+            "unit": unit,
             "sources": [largest["accession_number"]],
         }
 
