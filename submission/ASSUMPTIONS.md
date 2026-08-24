@@ -17,6 +17,8 @@ you nothing.
 | 4 | SEC archive XML filenames are not standardized across filers. | I identified holdings XML by checking XML content for `infoTable` rather than relying on filenames. | Filenames varied widely across filings, so filename-based logic would be brittle. |
 | 5 | Several schema fields such as FIGI, put/call, and other manager are frequently absent in the source XML. | I treat those fields as null when they are not present. | The required schema marks these fields nullable, and EDA confirmed that missing values are common. 
 
+Local LLM note: I tested with a smaller Gemma model through Ollama, but Ollama did not consistently follow the JSON schema expected by agents/llm.py. I therefore kept the grading path unchanged and used the provided complete_json() interface, which is designed for the vLLM structured-output setup used in grading.
+
 ## Bonus 2 - CUSIP validation
 
 I validated all 2026 Q2 holdings against the SEC Official List of Section 13(f) Securities for 2026 Q2.
